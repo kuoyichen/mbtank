@@ -274,10 +274,8 @@
         let steeringVal = 1500; // 方向：1000=左，1500=中，2000=右
         let throttleVal = 1500; // 油門：1500=停止；>1500 才前進（坦克不後退）
 
-        // 坦克砲塔：第 8 組 byte，中央 0x96；每 1~2 秒在 -45°~+45° 隨機換一個角度。
-        let turretAngleDeg = 0;
-        let turretByte = 0x96;
-        let turretNextChangeAt = performance.now() + 1000 + Math.random()*1000;
+        // 坦克砲塔固定中央：第 8 組永遠輸出 0x96。
+        const turretByte = 0x96;
 
         // --- 自動控制變數 ---
         let autoMode = false;
@@ -540,43 +538,21 @@
         }
 
         function mapThrottleToTank(value) {
-            // 坦克沒有後退：1500 以下全部視為停止 0x64。
-            // 1500 -> 0x64，2000 -> 0xc8。
-            const v=Math.max(1500,Math.min(2000,Number(value)||1500));
-            return 0x64 + ((v-1500)/500)*(0xc8-0x64);
-        }
-
-        function turretAngleToByte(angleDeg) {
-            // -45° -> 0x64，0° -> 0x96，+45° -> 0xc8
-            const a=Math.max(-45,Math.min(45,Number(angleDeg)||0));
-            return 0x64 + ((a+45)/90)*(0xc8-0x64);
-        }
-
-        function updateRandomTurret(now=performance.now()) {
-            if(now < turretNextChangeAt) return;
-            let nextAngle;
-            // 避免每次只小動一點，讓砲塔的隨機左右動作比較明顯。
-            for(let i=0;i<5;i++) {
-                nextAngle = Math.round(-45 + Math.random()*90);
-                if(Math.abs(nextAngle-turretAngleDeg) >= 8) break;
-            }
-            turretAngleDeg = Math.max(-45,Math.min(45,nextAngle ?? 0));
-            turretByte = Math.round(turretAngleToByte(turretAngleDeg));
-            turretNextChangeAt = now + 1000 + Math.random()*1000;
-        }
-
-        function resetTurretRandom() {
-            turretAngleDeg = 0;
-            turretByte = 0x96;
-            turretNextChangeAt = performance.now() + 1000 + Math.random()*1000;
+            // 坦克沒有後退：1500 以下全部停止 0x64。
+            // 實車有明顯馬達死區，因此一旦要求前進，就至少從 0x96 起跳。
+            // 自動導航主要使用 1510~1700，將這段直接映射成 0x96~0xc8，提升實際推力。
+            const v=Number(value)||1500;
+            if(v <= 1500) return 0x64;
+            const active=Math.max(1510,Math.min(1700,v));
+            return 0x96 + ((active-1510)/(1700-1510))*(0xc8-0x96);
         }
 
         function formatCommand() {
             const throttleHex = toHexByte(mapThrottleToTank(throttleVal));
             const steeringHex = toHexByte(mapSteeringToTank(steeringVal));
-            const turretHex = toHexByte(turretByte);
+            const turretHex = '96'; // 砲塔固定中位，不再隨機移動
 
-            // 8 組依序：64 / 油門 / c8 / 方向 / 64 / 95 / c8 / 砲塔
+            // 8 組依序：64 / 油門 / c8 / 方向 / 64 / 95 / c8 / 96(砲塔中位)
             return `SS8${'64'}${throttleHex}${'c8'}${steeringHex}${'64'}${'95'}${'c8'}${turretHex}#`;
         }
 
@@ -610,7 +586,6 @@
         }
 
         function sendDataToMicrobit() {
-            updateRandomTurret();
             const command = formatCommand();
             debugString.textContent = command;
             if (isRecording && command !== lastRecordedCmd) {
@@ -625,7 +600,6 @@
 
         function startSendingData() {
             if (sendInterval) clearInterval(sendInterval);
-            resetTurretRandom();
             sendDataToMicrobit();
             sendInterval = setInterval(sendDataToMicrobit,100);
         }
