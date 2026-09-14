@@ -277,7 +277,7 @@
         let steeringVal = 1500; // CH1: 方向 (右手左右)
         let throttleVal = 1500; // CH2: 油門 (左手上下)
         let ch3Val = 1500;      // 預留
-        let ch4Val = 1500;      // 預留
+        let ch4Val = 1500;      // 舊 SRV 預留值（SS8 砲塔不再使用此變數）
 
         // --- 自動控制變數 ---
         let autoMode = false;
@@ -371,11 +371,14 @@
         let lastRecordedCmd = "";
 
         // --- 砲塔控制 / 實際行走軌跡 ---
-        // 坦克端把第 8 組 1000~2000 映射為 140°~40°，因此 5° = 50 控制單位。
-        const TURRET_MIN = 1000;
-        const TURRET_MAX = 2000;
-        const TURRET_CENTER = 1500;
-        const TURRET_STEP_5DEG = 50;
+        // SS8 第 8 組就是砲塔左右的「原始 2 位十六進位值」。
+        // 不再經過舊 SRV 的 1000~2000 通道值轉換：64=左端、96=中央、C8=右端。
+        // 坦克端會把該 byte ×10 後映射到伺服角度；因此 raw byte 每改 5，約等於砲塔 5°。
+        const TURRET_BYTE_MIN = 0x64;
+        const TURRET_BYTE_MAX = 0xC8;
+        const TURRET_BYTE_CENTER = 0x96;
+        const TURRET_BYTE_STEP_5DEG = 0x05;
+        let turretByte = TURRET_BYTE_CENTER;
         let turretRandomActive = false;
         let turretRandomTimer = null;
         let turretHoldTimer = null;
@@ -496,12 +499,12 @@
         btnExitFullscreen.addEventListener('click', (e) => { e.stopPropagation(); setCameraFullscreen(false); });
         document.addEventListener('keydown', (e) => { if(e.key === 'Escape' && isFullscreen) setCameraFullscreen(false); });
 
-        function clampTurretValue(v) {
-            return Math.max(TURRET_MIN, Math.min(TURRET_MAX, Math.round(v)));
+        function clampTurretByte(v) {
+            return Math.max(TURRET_BYTE_MIN, Math.min(TURRET_BYTE_MAX, Math.round(v)));
         }
 
-        function setTurretValue(v, sendNow = true) {
-            ch4Val = clampTurretValue(v);
+        function setTurretByte(v, sendNow = true) {
+            turretByte = clampTurretByte(v);
             if(sendNow && isConnected) sendDataToMicrobit();
             else if(!isConnected) debugString.textContent = formatCommand();
         }
@@ -517,15 +520,16 @@
 
         function scheduleTurretRandomMove() {
             if(!turretRandomActive) return;
-            // 以 5° 為一格，在約 50°~130°間隨機選擇下一個位置；避免下一點太接近目前位置。
-            let next = ch4Val;
-            for(let tries=0; tries<8 && Math.abs(next-ch4Val)<100; tries++) {
-                const step = 2 + Math.floor(Math.random() * 15); // 10°~80°，5°一格
-                const dir = Math.random() < 0.5 ? -1 : 1;
-                next = clampTurretValue(TURRET_CENTER + dir * step * TURRET_STEP_5DEG);
+            // 直接隨機改第 8 組 raw byte；以 5 為一格，確保每格約 5°。
+            // 下一個位置至少離目前 10°，讓左右隨機動作肉眼可見。
+            let next = turretByte;
+            const slotCount = Math.floor((TURRET_BYTE_MAX - TURRET_BYTE_MIN) / TURRET_BYTE_STEP_5DEG);
+            for(let tries=0; tries<12 && Math.abs(next-turretByte)<10; tries++) {
+                const slot = Math.floor(Math.random() * (slotCount + 1));
+                next = clampTurretByte(TURRET_BYTE_MIN + slot * TURRET_BYTE_STEP_5DEG);
             }
-            setTurretValue(next);
-            const delay = 450 + Math.floor(Math.random() * 650);
+            setTurretByte(next);
+            const delay = 500 + Math.floor(Math.random() * 700);
             turretRandomTimer = setTimeout(scheduleTurretRandomMove, delay);
         }
 
@@ -542,8 +546,9 @@
         });
 
         function turretStep(direction) {
-            // 坦克端 1000->140°、2000->40°：左轉 5° = -50；右轉 5° = +50。
-            setTurretValue(ch4Val + direction * TURRET_STEP_5DEG);
+            // 第 8 組水平控制：左 = raw byte 減 5；右 = raw byte 加 5。
+            // 例如中央 96：左一次 -> 91；右一次 -> 9B。
+            setTurretByte(turretByte + direction * TURRET_BYTE_STEP_5DEG);
         }
 
         function bindTurretHold(button, direction) {
@@ -676,7 +681,7 @@
                 0x64,                         // 第5組：固定
                 0x95,                         // 第6組：依範例固定
                 0xC8,                         // 第7組：固定
-                tankAxisByte(ch4Val)           // 第8組：右上水平 = 砲塔左右，中央 0x96
+                turretByte                     // 第8組：右上水平 = 砲塔左右；直接送 raw byte，中央 0x96
             ];
             return `SS8${groups.map(tankHexByte).join('')}#`;
         }
