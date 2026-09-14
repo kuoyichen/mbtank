@@ -115,11 +115,15 @@
         <div class="flex-1 flex flex-col p-2 gap-2 overflow-y-auto">
             <!-- Camera Stage -->
             <div class="stage" id="stageContainer">
-                <button id="btnExitFullscreen" class="hidden absolute top-2 left-2 bg-gray-800/80 border border-gray-500 text-white px-3 py-1 rounded text-sm z-30 hover:bg-gray-700 transition cursor-pointer">離開全螢幕</button>
-                <div class="absolute top-2 right-2 flex gap-2 z-30">
-                    <button id="btnAutoScanOverlay" disabled class="bg-cyan-600/80 border border-cyan-400 text-white px-3 py-1 rounded text-sm opacity-50 cursor-not-allowed transition hover:bg-cyan-500 disabled:hover:bg-cyan-600/80 cursor-pointer shadow-lg shadow-black/50">自動掃描</button>
-                    <button id="btnAutoStartOverlay" disabled class="bg-green-600/80 border border-green-500 text-white px-3 py-1 rounded text-sm opacity-50 cursor-not-allowed transition hover:bg-green-500 disabled:hover:bg-green-600/80 cursor-pointer shadow-lg shadow-black/50">開始</button>
-                    <button id="btnAutoStopOverlay" disabled class="bg-red-600/80 border border-red-500 text-white px-3 py-1 rounded text-sm opacity-50 cursor-not-allowed transition hover:bg-red-500 disabled:hover:bg-red-600/80 cursor-pointer shadow-lg shadow-black/50">停止</button>
+                <div id="overlayControls" class="absolute top-2 left-2 right-2 flex flex-nowrap justify-end items-center gap-1 z-30 whitespace-nowrap">
+                    <button id="btnExitFullscreen" class="hidden bg-gray-800/85 border border-gray-500 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs hover:bg-gray-700 transition cursor-pointer shadow-lg shadow-black/50">離開</button>
+                    <button id="btnAutoScanOverlay" disabled class="bg-cyan-600/80 border border-cyan-400 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs opacity-50 cursor-not-allowed transition hover:bg-cyan-500 disabled:hover:bg-cyan-600/80 cursor-pointer shadow-lg shadow-black/50">掃描</button>
+                    <button id="btnAutoStartOverlay" disabled class="bg-green-600/80 border border-green-500 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs opacity-50 cursor-not-allowed transition hover:bg-green-500 disabled:hover:bg-green-600/80 cursor-pointer shadow-lg shadow-black/50">開始</button>
+                    <button id="btnAutoStopOverlay" disabled class="bg-red-600/80 border border-red-500 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs opacity-50 cursor-not-allowed transition hover:bg-red-500 disabled:hover:bg-red-600/80 cursor-pointer shadow-lg shadow-black/50">停止</button>
+                    <button id="btnTurretRandom" class="hidden bg-purple-600/80 border border-purple-400 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs transition hover:bg-purple-500 cursor-pointer shadow-lg shadow-black/50">砲塔隨機</button>
+                    <button id="btnTurretLeft" class="hidden bg-amber-700/80 border border-amber-400 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs transition hover:bg-amber-600 cursor-pointer shadow-lg shadow-black/50 select-none">砲塔左</button>
+                    <button id="btnTurretRight" class="hidden bg-amber-700/80 border border-amber-400 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs transition hover:bg-amber-600 cursor-pointer shadow-lg shadow-black/50 select-none">砲塔右</button>
+                    <button id="btnTrajectory" class="hidden bg-blue-700/80 border border-blue-400 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs transition hover:bg-blue-600 cursor-pointer shadow-lg shadow-black/50">軌跡</button>
                 </div>
                 <video id="video" playsinline muted></video>
                 <canvas id="overlay"></canvas>
@@ -366,6 +370,26 @@
         let isRecording = false;
         let lastRecordedCmd = "";
 
+        // --- 砲塔控制 / 實際行走軌跡 ---
+        // 坦克端把第 8 組 1000~2000 映射為 140°~40°，因此 5° = 50 控制單位。
+        const TURRET_MIN = 1000;
+        const TURRET_MAX = 2000;
+        const TURRET_CENTER = 1500;
+        const TURRET_STEP_5DEG = 50;
+        let turretRandomActive = false;
+        let turretRandomTimer = null;
+        let turretHoldTimer = null;
+
+        let trajectoryRecording = false;
+        let trajectoryPoints = [];
+        let trajectoryLastSampleAt = 0;
+        let trajectoryLastSeenAt = 0;
+        let trajectoryBreakPending = false;
+        const TRAJECTORY_SAMPLE_MS = 80;
+        const TRAJECTORY_MIN_DIST_PX = 3;
+        const TRAJECTORY_BREAK_MS = 350;
+        const TRAJECTORY_MAX_POINTS = 5000;
+
         // --- DOM Elements ---
         const $ = id => document.getElementById(id);
         const connectBtn = $('connectBtn');
@@ -378,6 +402,11 @@
         const btnAutoScanOverlay = $('btnAutoScanOverlay');
         const btnAutoStartOverlay = $('btnAutoStartOverlay');
         const btnAutoStopOverlay = $('btnAutoStopOverlay');
+        const overlayControls = $('overlayControls');
+        const btnTurretRandom = $('btnTurretRandom');
+        const btnTurretLeft = $('btnTurretLeft');
+        const btnTurretRight = $('btnTurretRight');
+        const btnTrajectory = $('btnTrajectory');
         const targetStatus = $('targetStatus');
         const stageContainer = $('stageContainer');
         const btnUndoWaypoint = $('btnUndoWaypoint');
@@ -458,11 +487,107 @@
             isFullscreen = enabled;
             stageContainer.classList.toggle('stage-fullscreen', enabled);
             btnExitFullscreen.classList.toggle('hidden', !enabled);
+            [btnTurretRandom, btnTurretLeft, btnTurretRight, btnTrajectory].forEach(btn => btn.classList.toggle('hidden', !enabled));
             btnFullscreen.textContent = enabled ? '已全螢幕' : '相機全螢幕';
         }
+        overlayControls.addEventListener('click', e => e.stopPropagation());
+        overlayControls.addEventListener('pointerdown', e => e.stopPropagation());
         btnFullscreen.addEventListener('click', (e) => { e.stopPropagation(); setCameraFullscreen(true); });
         btnExitFullscreen.addEventListener('click', (e) => { e.stopPropagation(); setCameraFullscreen(false); });
         document.addEventListener('keydown', (e) => { if(e.key === 'Escape' && isFullscreen) setCameraFullscreen(false); });
+
+        function clampTurretValue(v) {
+            return Math.max(TURRET_MIN, Math.min(TURRET_MAX, Math.round(v)));
+        }
+
+        function setTurretValue(v, sendNow = true) {
+            ch4Val = clampTurretValue(v);
+            if(sendNow && isConnected) sendDataToMicrobit();
+            else if(!isConnected) debugString.textContent = formatCommand();
+        }
+
+        function stopTurretRandom() {
+            turretRandomActive = false;
+            if(turretRandomTimer) clearTimeout(turretRandomTimer);
+            turretRandomTimer = null;
+            btnTurretRandom.textContent = '砲塔隨機';
+            btnTurretRandom.className = 'bg-purple-600/80 border border-purple-400 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs transition hover:bg-purple-500 cursor-pointer shadow-lg shadow-black/50';
+            btnTurretRandom.classList.toggle('hidden', !isFullscreen);
+        }
+
+        function scheduleTurretRandomMove() {
+            if(!turretRandomActive) return;
+            // 以 5° 為一格，在約 50°~130°間隨機選擇下一個位置；避免下一點太接近目前位置。
+            let next = ch4Val;
+            for(let tries=0; tries<8 && Math.abs(next-ch4Val)<100; tries++) {
+                const step = 2 + Math.floor(Math.random() * 15); // 10°~80°，5°一格
+                const dir = Math.random() < 0.5 ? -1 : 1;
+                next = clampTurretValue(TURRET_CENTER + dir * step * TURRET_STEP_5DEG);
+            }
+            setTurretValue(next);
+            const delay = 450 + Math.floor(Math.random() * 650);
+            turretRandomTimer = setTimeout(scheduleTurretRandomMove, delay);
+        }
+
+        btnTurretRandom.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if(turretRandomActive) {
+                stopTurretRandom();
+            } else {
+                turretRandomActive = true;
+                btnTurretRandom.textContent = '砲塔關閉';
+                btnTurretRandom.className = 'bg-red-700/85 border border-red-400 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs transition hover:bg-red-600 cursor-pointer shadow-lg shadow-black/50';
+                scheduleTurretRandomMove();
+            }
+        });
+
+        function turretStep(direction) {
+            // 坦克端 1000->140°、2000->40°：左轉 5° = -50；右轉 5° = +50。
+            setTurretValue(ch4Val + direction * TURRET_STEP_5DEG);
+        }
+
+        function bindTurretHold(button, direction) {
+            const stopHold = () => {
+                if(turretHoldTimer) clearInterval(turretHoldTimer);
+                turretHoldTimer = null;
+            };
+            button.addEventListener('pointerdown', (e) => {
+                e.preventDefault(); e.stopPropagation();
+                stopTurretRandom();
+                stopHold();
+                turretStep(direction);
+                turretHoldTimer = setInterval(() => turretStep(direction), 170);
+                try { button.setPointerCapture(e.pointerId); } catch(_) {}
+            });
+            button.addEventListener('pointerup', stopHold);
+            button.addEventListener('pointercancel', stopHold);
+            button.addEventListener('lostpointercapture', stopHold);
+        }
+        bindTurretHold(btnTurretLeft, -1);
+        bindTurretHold(btnTurretRight, 1);
+
+        function setTrajectoryButtonState() {
+            btnTrajectory.textContent = trajectoryRecording ? '軌跡停止' : '軌跡';
+            btnTrajectory.className = trajectoryRecording
+                ? 'bg-emerald-700/85 border border-emerald-400 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs transition hover:bg-emerald-600 cursor-pointer shadow-lg shadow-black/50'
+                : 'bg-blue-700/80 border border-blue-400 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs transition hover:bg-blue-600 cursor-pointer shadow-lg shadow-black/50';
+            btnTrajectory.classList.toggle('hidden', !isFullscreen);
+        }
+
+        btnTrajectory.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if(trajectoryRecording) {
+                trajectoryRecording = false;
+            } else {
+                trajectoryPoints = [];
+                trajectoryLastSampleAt = 0;
+                trajectoryLastSeenAt = 0;
+                trajectoryBreakPending = false;
+                trajectoryRecording = true;
+            }
+            setTrajectoryButtonState();
+        });
+        setTrajectoryButtonState();
 
         // ==========================================
         // 1. 藍牙連線邏輯
@@ -516,6 +641,7 @@
             connectBtn.className = 'bg-blue-600/20 border border-blue-500 text-blue-400 px-4 py-1.5 rounded font-semibold hover:bg-blue-600/30 transition shadow';
             btStatus.textContent = "藍牙已斷線";
             btStatus.classList.replace('text-blue-400', 'text-gray-300');
+            stopTurretRandom();
             stopSendingData();
             disableAutoMode();
         }
@@ -994,7 +1120,7 @@
             buttons.forEach(btn=>{
                 if(!btn) return;
                 btn.disabled=isBusy || !cvReady || !video.srcObject;
-                btn.textContent=isBusy ? '分析中…' : '自動掃描';
+                btn.textContent=isBusy ? '分析中…' : (btn===btnAutoScanOverlay ? '掃描' : '自動掃描');
                 btn.classList.toggle('opacity-70', isBusy);
                 btn.classList.toggle('opacity-50', !isBusy && (!cvReady || !video.srcObject));
                 btn.classList.toggle('cursor-not-allowed', !isBusy && (!cvReady || !video.srcObject));
@@ -1448,6 +1574,63 @@
         // ==========================================
         // 6. 影像處理與繪製 (整合 ArUco)
         // ==========================================
+        function updateActualTrajectory(navPose) {
+            const now = performance.now();
+            if(!navPose || !navPose.center) {
+                if(trajectoryRecording && trajectoryLastSeenAt && now - trajectoryLastSeenAt > TRAJECTORY_BREAK_MS) {
+                    trajectoryBreakPending = true;
+                }
+                return;
+            }
+
+            const x = navPose.center.x, y = navPose.center.y;
+            // 不論手動/自動模式，都保存最新實際車體位置，供掃描起點與軌跡使用。
+            carScreenPos = {x, y};
+            if(!trajectoryRecording) return;
+
+            const gapBefore = trajectoryLastSeenAt && now - trajectoryLastSeenAt > TRAJECTORY_BREAK_MS;
+            trajectoryLastSeenAt = now;
+            if(now - trajectoryLastSampleAt < TRAJECTORY_SAMPLE_MS) return;
+
+            const last = trajectoryPoints.length ? trajectoryPoints[trajectoryPoints.length-1] : null;
+            const mustBreak = trajectoryBreakPending || gapBefore;
+            if(!last || mustBreak || Math.hypot(x-last.x, y-last.y) >= TRAJECTORY_MIN_DIST_PX) {
+                trajectoryPoints.push({x, y, breakBefore: !!mustBreak});
+                if(trajectoryPoints.length > TRAJECTORY_MAX_POINTS) trajectoryPoints.splice(0, trajectoryPoints.length - TRAJECTORY_MAX_POINTS);
+                trajectoryBreakPending = false;
+                trajectoryLastSampleAt = now;
+            }
+        }
+
+        function drawActualTrajectory() {
+            if(trajectoryPoints.length < 1) return;
+            ctx.save();
+            ctx.lineWidth = Math.max(3, overlay.width / 260);
+            ctx.strokeStyle = 'rgba(255,215,0,0.92)';
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            trajectoryPoints.forEach((p, i) => {
+                if(i === 0 || p.breakBefore) ctx.moveTo(p.x, p.y);
+                else ctx.lineTo(p.x, p.y);
+            });
+            ctx.stroke();
+
+            const first = trajectoryPoints[0];
+            const last = trajectoryPoints[trajectoryPoints.length-1];
+            ctx.fillStyle = 'rgba(255,215,0,0.95)';
+            ctx.beginPath(); ctx.arc(first.x, first.y, Math.max(4, overlay.width/320), 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(last.x, last.y, Math.max(5, overlay.width/280), 0, Math.PI*2); ctx.fill();
+            if(trajectoryRecording) {
+                ctx.font = `700 ${Math.max(13,overlay.width/60)}px "IBM Plex Mono",monospace`;
+                ctx.fillStyle = 'rgba(0,0,0,.68)';
+                ctx.fillRect(last.x+8,last.y-24,72,20);
+                ctx.fillStyle = '#ffe16a';
+                ctx.fillText('TRACK', last.x+12, last.y-9);
+            }
+            ctx.restore();
+        }
+
         function processFrame(src,W,H){
             if(!cvReady||!W||!H) return;
             overlay.width=W; overlay.height=H; ctx.clearRect(0,0,W,H);
@@ -1525,6 +1708,8 @@
             const arucoPose = targetMarker ? markerToNavPose(targetMarker) : null;
             const navPose = chooseNavigationPose(arucoPose, ledPose);
 
+            updateActualTrajectory(navPose);
+            drawActualTrajectory();
             drawTargetAndLine(navPose);
 
             if(navPose) {
