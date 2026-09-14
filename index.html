@@ -157,7 +157,7 @@
                 </div>
                 
                 <div class="text-xs text-gray-400 bg-black/30 p-2 rounded data-readout flex justify-between gap-2 flex-wrap">
-                    <div>輸出字串: <span id="debugString" class="text-green-300">SS86464c8966495c896#</span></div>
+                    <div>輸出字串: <span id="debugString" class="text-green-300">SS86464C8966495C896#</span></div>
                     <div>模式: <span id="modeDisplay" class="text-blue-300">手動</span></div>
                 </div>
 
@@ -522,7 +522,7 @@
 
         // --- 坦克 SS8 八組 16 進位控制碼 ---
         // 格式：SS8 [1][2油門][3][4方向][5][6][7][8砲塔] #
-        // 範例初始值：SS8 64 64 c8 96 64 95 c8 96 #
+        // 範例初始值：SS8 64 64 C8 96 64 95 C8 96 #
         // 為保留原本自動導航演算法，內部仍沿用 1000~2000 / 1500 中立值，
         // 只在真正送出 BLE 指令時轉換為坦克需要的 0x64~0xC8。
         function tankAxisByte(val) {
@@ -538,7 +538,7 @@
         }
 
         function tankHexByte(num) {
-            return Math.max(0, Math.min(255, Math.round(num))).toString(16).padStart(2, '0');
+            return Math.max(0, Math.min(255, Math.round(num))).toString(16).toUpperCase().padStart(2, '0');
         }
 
         function formatCommand() {
