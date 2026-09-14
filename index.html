@@ -270,12 +270,10 @@
         let bleWriteFailures = 0;
 
         // --- 控制變數 ---
-        // 自動導航仍沿用原本 1000~2000 的內部控制尺度，送出前才轉為坦克 SS8 十六進位協議。
-        let steeringVal = 1500; // 方向：1000=左，1500=中，2000=右
-        let throttleVal = 1500; // 油門：1500=停止；>1500 才前進（坦克不後退）
-
-        // 坦克砲塔固定中央：第 8 組永遠輸出 0x96。
-        const turretByte = 0x96;
+        let steeringVal = 1500; // CH1: 方向 (右手左右)
+        let throttleVal = 1500; // CH2: 油門 (左手上下)
+        let ch3Val = 1500;      // 預留
+        let ch4Val = 1500;      // 預留
 
         // --- 自動控制變數 ---
         let autoMode = false;
@@ -522,55 +520,39 @@
             disableAutoMode();
         }
 
-        // ==========================================
-        // 坦克控制碼：SS8 + 8 組 2 位十六進位 + #
-        // 範例停止/置中：SS8 64 64 c8 96 64 95 c8 96 #
-        // 第2組 = 油門、第4組 = 方向、第8組 = 砲塔左右。
-        // ==========================================
-        function toHexByte(value) {
-            return Math.max(0x64, Math.min(0xc8, Math.round(value))).toString(16).padStart(2,'0');
+        // --- 坦克 SS8 八組 16 進位控制碼 ---
+        // 格式：SS8 [1][2油門][3][4方向][5][6][7][8砲塔] #
+        // 範例初始值：SS8 64 64 c8 96 64 95 c8 96 #
+        // 為保留原本自動導航演算法，內部仍沿用 1000~2000 / 1500 中立值，
+        // 只在真正送出 BLE 指令時轉換為坦克需要的 0x64~0xC8。
+        function tankAxisByte(val) {
+            const v = Math.max(1000, Math.min(2000, Number(val) || 1500));
+            return Math.round(0x64 + ((v - 1000) / 1000) * (0xC8 - 0x64));
         }
 
-        function mapSteeringToTank(value) {
-            // 實車方向機械死區很大：必須超過中心到左右極限的一半才真正開始轉。
-            // 中心 = 0x96(150)，左極限 = 0x64(100)，右極限 = 0xc8(200)。
-            // 半行程約為 0x7d / 0xaf，因此實際起轉值再跨過一些：左 0x78、右 0xb4。
-            // 內部 1500±35 保留為直行死區，避免視覺小抖動造成履帶一直左右切換。
-            const v=Math.max(1000,Math.min(2000,Number(value)||1500));
-            const INTERNAL_DEADBAND=35;
-            const LEFT_START=0x78;
-            const RIGHT_START=0xb4;
-
-            if(Math.abs(v-1500) <= INTERNAL_DEADBAND) return 0x96;
-
-            if(v > 1500) {
-                const t=Math.max(0,Math.min(1,(v-(1500+INTERNAL_DEADBAND))/(2000-(1500+INTERNAL_DEADBAND))));
-                return RIGHT_START + t*(0xc8-RIGHT_START);
-            }
-
-            const t=Math.max(0,Math.min(1,((1500-INTERNAL_DEADBAND)-v)/((1500-INTERNAL_DEADBAND)-1000)));
-            return LEFT_START - t*(LEFT_START-0x64);
+        function tankThrottleByte(val) {
+            // 坦克沒有後退：原程式 1500 以下全部視為最低油門 0x64。
+            // 1500~2000 線性對應 0x64~0xC8，保留原本自動導航的速度比例。
+            const v = Math.max(1500, Math.min(2000, Number(val) || 1500));
+            return Math.round(0x64 + ((v - 1500) / 500) * (0xC8 - 0x64));
         }
 
-        function mapThrottleToTank(value) {
-            // 坦克沒有後退：1500 以下全部停止 0x64。
-            // 因履帶/地面摩擦大，真正可用的起步點接近中位 0x96；
-            // 這裡再略高一點，以 0x9c 作為最低有效前進輸出，確保能克服靜摩擦。
-            // 自動導航常用 1510~1700，映射到 0x9c~0xc8。
-            const v=Number(value)||1500;
-            if(v <= 1500) return 0x64;
-            const active=Math.max(1510,Math.min(1700,v));
-            const START_THROTTLE=0x9c;
-            return START_THROTTLE + ((active-1510)/(1700-1510))*(0xc8-START_THROTTLE);
+        function tankHexByte(num) {
+            return Math.max(0, Math.min(255, Math.round(num))).toString(16).padStart(2, '0');
         }
 
         function formatCommand() {
-            const throttleHex = toHexByte(mapThrottleToTank(throttleVal));
-            const steeringHex = toHexByte(mapSteeringToTank(steeringVal));
-            const turretHex = '96'; // 砲塔固定中位，不再隨機移動
-
-            // 8 組依序：64 / 油門 / c8 / 方向 / 64 / 95 / c8 / 96(砲塔中位)
-            return `SS8${'64'}${throttleHex}${'c8'}${steeringHex}${'64'}${'95'}${'c8'}${turretHex}#`;
+            const groups = [
+                0x64,                         // 第1組：固定
+                tankThrottleByte(throttleVal),// 第2組：左下垂直 = 油門，初始/停止 0x64
+                0xC8,                         // 第3組：固定
+                tankAxisByte(steeringVal),    // 第4組：右下水平 = 方向舵，中央 0x96
+                0x64,                         // 第5組：固定
+                0x95,                         // 第6組：依範例固定
+                0xC8,                         // 第7組：固定
+                tankAxisByte(ch4Val)           // 第8組：右上水平 = 砲塔左右，中央 0x96
+            ];
+            return `SS8${groups.map(tankHexByte).join('')}#`;
         }
 
         function queueBleCommand(command) {
