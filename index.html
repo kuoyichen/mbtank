@@ -532,19 +532,36 @@
         }
 
         function mapSteeringToTank(value) {
-            // 1000 -> 0x64, 1500 -> 0x96, 2000 -> 0xc8
+            // 實車方向機械死區很大：必須超過中心到左右極限的一半才真正開始轉。
+            // 中心 = 0x96(150)，左極限 = 0x64(100)，右極限 = 0xc8(200)。
+            // 半行程約為 0x7d / 0xaf，因此實際起轉值再跨過一些：左 0x78、右 0xb4。
+            // 內部 1500±35 保留為直行死區，避免視覺小抖動造成履帶一直左右切換。
             const v=Math.max(1000,Math.min(2000,Number(value)||1500));
-            return 0x64 + ((v-1000)/1000)*(0xc8-0x64);
+            const INTERNAL_DEADBAND=35;
+            const LEFT_START=0x78;
+            const RIGHT_START=0xb4;
+
+            if(Math.abs(v-1500) <= INTERNAL_DEADBAND) return 0x96;
+
+            if(v > 1500) {
+                const t=Math.max(0,Math.min(1,(v-(1500+INTERNAL_DEADBAND))/(2000-(1500+INTERNAL_DEADBAND))));
+                return RIGHT_START + t*(0xc8-RIGHT_START);
+            }
+
+            const t=Math.max(0,Math.min(1,((1500-INTERNAL_DEADBAND)-v)/((1500-INTERNAL_DEADBAND)-1000)));
+            return LEFT_START - t*(LEFT_START-0x64);
         }
 
         function mapThrottleToTank(value) {
             // 坦克沒有後退：1500 以下全部停止 0x64。
-            // 實車有明顯馬達死區，因此一旦要求前進，就至少從 0x96 起跳。
-            // 自動導航主要使用 1510~1700，將這段直接映射成 0x96~0xc8，提升實際推力。
+            // 因履帶/地面摩擦大，真正可用的起步點接近中位 0x96；
+            // 這裡再略高一點，以 0x9c 作為最低有效前進輸出，確保能克服靜摩擦。
+            // 自動導航常用 1510~1700，映射到 0x9c~0xc8。
             const v=Number(value)||1500;
             if(v <= 1500) return 0x64;
             const active=Math.max(1510,Math.min(1700,v));
-            return 0x96 + ((active-1510)/(1700-1510))*(0xc8-0x96);
+            const START_THROTTLE=0x9c;
+            return START_THROTTLE + ((active-1510)/(1700-1510))*(0xc8-START_THROTTLE);
         }
 
         function formatCommand() {
