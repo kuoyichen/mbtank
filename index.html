@@ -371,17 +371,18 @@
         let lastRecordedCmd = "";
 
         // --- 砲塔控制 / 實際行走軌跡 ---
-        // SS8 第 8 組就是砲塔左右的「原始 2 位十六進位值」。
-        // 不再經過舊 SRV 的 1000~2000 通道值轉換：64=左端、96=中央、C8=右端。
-        // 坦克端會把該 byte ×10 後映射到伺服角度；因此 raw byte 每改 5，約等於砲塔 5°。
-        const TURRET_BYTE_MIN = 0x64;
-        const TURRET_BYTE_MAX = 0xC8;
-        const TURRET_BYTE_CENTER = 0x96;
-        const TURRET_BYTE_STEP_5DEG = 0x05;
+        // SS8 第 8 組是砲塔連續旋轉控制。坦克端 hex byte 會 ×10：
+        // 0x96 = 1500 = 停止/中央；實車測試約 1570~1580 開始向右，1470~1460 開始向左。
+        // 因此不再把第 8 組當「位置」累加，而是按住時固定送小幅速度，放開立即回中央停止。
+        const TURRET_BYTE_CENTER = 0x96; // 1500
+        const TURRET_BYTE_RIGHT_SLOW = 0x9D; // 1570
+        const TURRET_BYTE_RIGHT_ALT  = 0x9E; // 1580
+        const TURRET_BYTE_LEFT_SLOW  = 0x93; // 1470
+        const TURRET_BYTE_LEFT_ALT   = 0x92; // 1460
         let turretByte = TURRET_BYTE_CENTER;
         let turretRandomActive = false;
         let turretRandomTimer = null;
-        let turretHoldTimer = null;
+        let turretRandomPhase = 0;
 
         let trajectoryRecording = false;
         let trajectoryPoints = [];
@@ -500,7 +501,8 @@
         document.addEventListener('keydown', (e) => { if(e.key === 'Escape' && isFullscreen) setCameraFullscreen(false); });
 
         function clampTurretByte(v) {
-            return Math.max(TURRET_BYTE_MIN, Math.min(TURRET_BYTE_MAX, Math.round(v)));
+            // 砲塔只允許實測過的窄範圍，避免突然高速旋轉。
+            return Math.max(TURRET_BYTE_LEFT_ALT, Math.min(TURRET_BYTE_RIGHT_ALT, Math.round(v)));
         }
 
         function setTurretByte(v, sendNow = true) {
@@ -509,10 +511,16 @@
             else if(!isConnected) debugString.textContent = formatCommand();
         }
 
-        function stopTurretRandom() {
+        function centerTurret(sendNow = true) {
+            setTurretByte(TURRET_BYTE_CENTER, sendNow);
+        }
+
+        function stopTurretRandom(returnToCenter = true) {
             turretRandomActive = false;
             if(turretRandomTimer) clearTimeout(turretRandomTimer);
             turretRandomTimer = null;
+            turretRandomPhase = 0;
+            if(returnToCenter) centerTurret();
             btnTurretRandom.textContent = '砲塔隨機';
             btnTurretRandom.className = 'bg-purple-600/80 border border-purple-400 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs transition hover:bg-purple-500 cursor-pointer shadow-lg shadow-black/50';
             btnTurretRandom.classList.toggle('hidden', !isFullscreen);
@@ -520,56 +528,66 @@
 
         function scheduleTurretRandomMove() {
             if(!turretRandomActive) return;
-            // 直接隨機改第 8 組 raw byte；以 5 為一格，確保每格約 5°。
-            // 下一個位置至少離目前 10°，讓左右隨機動作肉眼可見。
-            let next = turretByte;
-            const slotCount = Math.floor((TURRET_BYTE_MAX - TURRET_BYTE_MIN) / TURRET_BYTE_STEP_5DEG);
-            for(let tries=0; tries<12 && Math.abs(next-turretByte)<10; tries++) {
-                const slot = Math.floor(Math.random() * (slotCount + 1));
-                next = clampTurretByte(TURRET_BYTE_MIN + slot * TURRET_BYTE_STEP_5DEG);
+
+            // 中央偏置的小幅擺動：右一點 -> 回中 -> 左一點 -> 回中。
+            // 左右只使用實車確認過的 1570/1580、1470/1460；
+            // 動作時間短、回中停留較久，避免砲塔越轉越遠。
+            let nextByte = TURRET_BYTE_CENTER;
+            let delay = 700;
+
+            if(turretRandomPhase === 0) {
+                nextByte = Math.random() < 0.75 ? TURRET_BYTE_RIGHT_SLOW : TURRET_BYTE_RIGHT_ALT;
+                delay = 180 + Math.floor(Math.random() * 170); // 右轉約 0.18~0.35 秒
+            } else if(turretRandomPhase === 1) {
+                nextByte = TURRET_BYTE_CENTER;
+                delay = 550 + Math.floor(Math.random() * 500); // 回中停 0.55~1.05 秒
+            } else if(turretRandomPhase === 2) {
+                nextByte = Math.random() < 0.75 ? TURRET_BYTE_LEFT_SLOW : TURRET_BYTE_LEFT_ALT;
+                delay = 180 + Math.floor(Math.random() * 170); // 左轉約 0.18~0.35 秒
+            } else {
+                nextByte = TURRET_BYTE_CENTER;
+                delay = 650 + Math.floor(Math.random() * 650); // 回中停 0.65~1.30 秒
             }
-            setTurretByte(next);
-            const delay = 500 + Math.floor(Math.random() * 700);
+
+            setTurretByte(nextByte);
+            turretRandomPhase = (turretRandomPhase + 1) % 4;
             turretRandomTimer = setTimeout(scheduleTurretRandomMove, delay);
         }
 
         btnTurretRandom.addEventListener('click', (e) => {
             e.stopPropagation();
             if(turretRandomActive) {
-                stopTurretRandom();
+                stopTurretRandom(true);
             } else {
+                centerTurret();
                 turretRandomActive = true;
+                turretRandomPhase = Math.random() < 0.5 ? 0 : 2; // 隨機先往右或往左
                 btnTurretRandom.textContent = '砲塔關閉';
                 btnTurretRandom.className = 'bg-red-700/85 border border-red-400 text-white px-1.5 sm:px-2 py-1 rounded text-[10px] sm:text-xs transition hover:bg-red-600 cursor-pointer shadow-lg shadow-black/50';
                 scheduleTurretRandomMove();
             }
         });
 
-        function turretStep(direction) {
-            // 第 8 組水平控制：左 = raw byte 減 5；右 = raw byte 加 5。
-            // 例如中央 96：左一次 -> 91；右一次 -> 9B。
-            setTurretByte(turretByte + direction * TURRET_BYTE_STEP_5DEG);
-        }
-
-        function bindTurretHold(button, direction) {
-            const stopHold = () => {
-                if(turretHoldTimer) clearInterval(turretHoldTimer);
-                turretHoldTimer = null;
+        function bindTurretHold(button, activeByte) {
+            const stopHold = (e) => {
+                if(e) e.stopPropagation();
+                centerTurret();
             };
             button.addEventListener('pointerdown', (e) => {
-                e.preventDefault(); e.stopPropagation();
-                stopTurretRandom();
-                stopHold();
-                turretStep(direction);
-                turretHoldTimer = setInterval(() => turretStep(direction), 170);
+                e.preventDefault();
+                e.stopPropagation();
+                // 手動介入時關閉隨機，但先不要送中央，直接切到按住方向。
+                stopTurretRandom(false);
+                setTurretByte(activeByte);
                 try { button.setPointerCapture(e.pointerId); } catch(_) {}
             });
             button.addEventListener('pointerup', stopHold);
             button.addEventListener('pointercancel', stopHold);
             button.addEventListener('lostpointercapture', stopHold);
         }
-        bindTurretHold(btnTurretLeft, -1);
-        bindTurretHold(btnTurretRight, 1);
+        // 按住固定送慢速方向值；放開立即回 0x96 (=1500) 停止。
+        bindTurretHold(btnTurretLeft, TURRET_BYTE_LEFT_SLOW);
+        bindTurretHold(btnTurretRight, TURRET_BYTE_RIGHT_SLOW);
 
         function setTrajectoryButtonState() {
             btnTrajectory.textContent = trajectoryRecording ? '軌跡停止' : '軌跡';
