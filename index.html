@@ -372,13 +372,13 @@
 
         // --- 砲塔控制 / 實際行走軌跡 ---
         // SS8 第 8 組是砲塔連續旋轉控制。坦克端 hex byte 會 ×10：
-        // 0x96 = 1500 = 停止/中央；實車測試約 1570~1580 開始向右，1470~1460 開始向左。
+        // 0x96 = 1500 = 停止/中央；實車測試約 1570~1580 開始向右；左側加強為 1450~1440。
         // 因此不再把第 8 組當「位置」累加，而是按住時固定送小幅速度，放開立即回中央停止。
         const TURRET_BYTE_CENTER = 0x96; // 1500
         const TURRET_BYTE_RIGHT_SLOW = 0x9D; // 1570
         const TURRET_BYTE_RIGHT_ALT  = 0x9E; // 1580
-        const TURRET_BYTE_LEFT_SLOW  = 0x93; // 1470
-        const TURRET_BYTE_LEFT_ALT   = 0x92; // 1460
+        const TURRET_BYTE_LEFT_SLOW  = 0x91; // 1450
+        const TURRET_BYTE_LEFT_ALT   = 0x90; // 1440
         let turretByte = TURRET_BYTE_CENTER;
         let turretRandomActive = false;
         let turretRandomTimer = null;
@@ -530,7 +530,7 @@
             if(!turretRandomActive) return;
 
             // 中央偏置的小幅擺動：右一點 -> 回中 -> 左一點 -> 回中。
-            // 左右只使用實車確認過的 1570/1580、1470/1460；
+            // 右側使用 1570/1580；左側加強為 1450/1440；
             // 動作時間短、回中停留較久，避免砲塔越轉越遠。
             let nextByte = TURRET_BYTE_CENTER;
             let delay = 700;
